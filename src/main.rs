@@ -76,10 +76,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut cr = Crossroads::new();
     let token = cr.register("com.example.dbustest", |b| {
-        b.method("Hello", ("name",), ("reply",), |_, _, (name,): (String,)| {
+        b.method("Hello", ("name",), ("reply",), |c, t, (name,): (String,)| {
             // Ok((format!("Hello {}!", name),))
-            local_simple_notification("rebound", &name , Duration::from_secs(5));
-            Ok((format!("Hello {}!", name),))
+            println!("-------");
+            println!("{:?}", c);
+            println!("{:?}", t);
+            println!("{:?}", name);
+            // println!("{:?}", reply);
+
+            println!("-------");
+            match local_simple_notification("rebound", &name , Duration::from_secs(5)) {
+                Ok(reply) => Ok((reply,)),
+                Err(_) => Err(dbus::MethodErr::failed("Send to notify"))
+            }
+                // Err(_) => Err(dbus::MethodErr{0: "error", 1: "descripion"})
+
+            // }
+            // Ok((format!("Hello {}!", name),))
+            // Ok(())
         });
     });
     cr.insert("/hello", &[token], ());
