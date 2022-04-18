@@ -77,11 +77,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cr = Crossroads::new();
     let token = cr.register("com.example.dbustest", |b| {
         b.method("Hello", ("name",), ("reply",), |_, _, (name,): (String,)| {
+            // Ok((format!("Hello {}!", name),))
+            local_simple_notification("rebound", &name , Duration::from_secs(5));
             Ok((format!("Hello {}!", name),))
         });
     });
     cr.insert("/hello", &[token], ());
-    local_simple_notification("test", token , Duration::from_secs(5))?;
+    // local_simple_notification("test", &format!("{:?}",token) , Duration::from_secs(5))?;
     cr.serve(&conn)?;
     Ok(())
 }
