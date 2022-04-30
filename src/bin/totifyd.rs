@@ -17,7 +17,7 @@ use tokio;
 
 static TOTIFY_BOT_DATA_FILE: &'static str = "../../totify_bot_data.toml";
 
-static TELEDATA_FILE: &'static str = "../../myconfig.toml";
+static TELEDATA_FILE: &'static str = "../../myconfig.json";
 
 // lazy_static! {
 //     static ref BOT_TOKEN: &'static str = load_bot_data(&TOTIFY_BOT_DATA_FILE).unwrap_or_else(|_| {
@@ -169,11 +169,11 @@ fn check_user_pass(user: &str, pass: &str) -> Result<bool> {
     for line in lines {
         let line_string = line.context("Error parsing passwords file.")?;
         if line_string.starts_with(&format!("{}:", user)) {
-            println!("{}", line_string);
             let encripted = line_string
                 .split(":")
                 .nth(1)
-                .context("Error geting salt in passwords file.")?;
+                .context("Error geting salt in passwords file.")?
+                .trim();
             let algorithm = encripted
                 .split("$")
                 .nth(1)
@@ -182,23 +182,21 @@ fn check_user_pass(user: &str, pass: &str) -> Result<bool> {
                 .split("$")
                 .nth(2)
                 .context("Error geting salt in passwords file.")?;
-            let data = encripted
-                .split("$")
-                .nth(3)
-                .context("Error geting salt in passwords file.")?;
-            println!("e---- {}", encripted);
-            println!("a---- {}", algorithm);
-            println!("s---- {}", salt);
-            println!("d---- {}", data);
-            let encripted_test = std::process::Command::new("openssl").args([
-                "passwd".to_string(),
-                String::from(format!("-{}", algorithm)),
-                "-salt",
-                salt,
-                pass,
-            ]).output().context("Error running openssl.")?;
-            println!("t---- {:?}", encripted_test);
-            return Ok(true);
+
+            let encripted_test = std::process::Command::new("openssl")
+                .args([
+                    // let encripted_test = ec.args([
+                    "passwd".to_string(),
+                    String::from(format!("-{}", algorithm)),
+                    "-salt".to_string(),
+                    salt.to_string(),
+                    pass.to_string(),
+                ])
+                .output()
+                .context("Error running openssl.")?
+                .stdout;
+            let encripted_test = std::str::from_utf8(&encripted_test)?.trim();
+            return Ok(encripted == encripted_test);
         }
     }
     Ok(false)
@@ -268,13 +266,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("Error checking password: {}", s);
                                     std::process::exit(1)
                                 }) {
-                                    println!("user found!");
+                                    users.insert(user.clone(), new_user);
+                                    bot.send_message(message.chat.id, format!("Welcome {}!", user))
+                                        .await?;
                                 } else {
-                                    println!("user bot found...");
-                                }
-                                users.insert(user.clone(), new_user);
-                                bot.send_message(message.chat.id, format!("Welcome {}!", user))
+                                    bot.send_message(
+                                        message.chat.id,
+                                        "Wrong password or username.",
+                                    )
                                     .await?;
+                                    // chequear si se puede acceder desde otro telefono si pongo un sleep para evitar ataques
+                                }
                             }
                         }
                         "/unregister" => {

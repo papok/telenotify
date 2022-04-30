@@ -1,2 +1,5 @@
 /target
 *myconfig.toml
+*myconfig.json
+*totify_bot_data.toml
+
