@@ -19,13 +19,6 @@ static TOTIFY_BOT_DATA_FILE: &'static str = "../../totify_bot_data.toml";
 
 static TELEDATA_FILE: &'static str = "../../myconfig.json";
 
-// lazy_static! {
-//     static ref BOT_TOKEN: &'static str = load_bot_data(&TOTIFY_BOT_DATA_FILE).unwrap_or_else(|_| {
-//                         println!("Failed to load bot token from {}", TOTIFY_BOT_DATA_FILE);
-//                         std::process::exit(1)
-//                     }).token;
-// }
-
 lazy_static! {
     static ref BOT_TOKEN: String = load_bot_data(&TOTIFY_BOT_DATA_FILE)
         .unwrap_or_else(|_| {
@@ -34,17 +27,6 @@ lazy_static! {
         })
         .token;
 }
-
-// lazy_static! {
-//     static ref BOT_TOKEN: String = String::from(
-//         load_bot_data(&TOTIFY_BOT_DATA_FILE)
-//             .unwrap_or_else(|_| {
-//                 println!("Failed to load bot token from {}", TOTIFY_BOT_DATA_FILE);
-//                 std::process::exit(1)
-//             })
-//             .token
-//     );
-// }
 
 type UserName = String;
 
@@ -57,7 +39,7 @@ struct TeleData {
 #[derive(Debug, Serialize, Deserialize)]
 struct UserData {
     chat_id: teloxide::types::ChatId,
-    paused: bool,
+    active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,12 +71,21 @@ fn make_on_fail_teledata_file(file_name: &str) -> Result<(), Box<dyn std::error:
     }
 }
 
-fn load_teledata(file_name: &str) -> Result<TeleData, Box<dyn std::error::Error>> {
-    Ok(serde_json::from_reader(File::open(file_name)?)?)
+// fn load_teledata(file_name: &str) -> Result<TeleData, Box<dyn std::error::Error>> {
+fn load_teledata(file_name: &str) -> Result<TeleData> {
+    Ok(serde_json::from_reader(
+        File::open(file_name).context(format!("Failed to open '{}' file.", file_name))?,
+    )
+    .context("Failed to deserialize data.")?)
 }
 
-fn save_teledata(file_name: &str, teledata: &TeleData) -> Result<(), Box<dyn std::error::Error>> {
-    serde_json::to_writer(File::create(file_name)?, teledata)?;
+// fn save_teledata(file_name: &str, teledata: &TeleData) -> Result<(), Box<dyn std::error::Error>> {
+fn save_teledata(file_name: &str, teledata: &TeleData) -> Result<()> {
+    serde_json::to_writer(
+        File::create(file_name).context(format!("Failed to write '{}' file.", file_name))?,
+        teledata,
+    )
+    .context("Failed to serialize data.")?;
     Ok(())
 }
 
@@ -161,7 +152,7 @@ fn run_dbus_server(tele_bot_token: &str) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn check_user_pass(user: &str, pass: &str) -> Result<bool> {
+fn is_user_pass_ok(user: &str, pass: &str) -> Result<bool> {
     let shadow_file_path = "/etc/shadow";
     let file = File::open(shadow_file_path).context("Error opening passwords file.")?;
     let reader = BufReader::new(file);
@@ -202,8 +193,139 @@ fn check_user_pass(user: &str, pass: &str) -> Result<bool> {
     Ok(false)
 }
 
+async fn bot_handler_error_detector(bot: AutoSend<Bot>, message: Message) -> Result<()> {
+    if let Err(e) = bot_handler(bot, message).await {
+        println!("Error in bot handler: {:?}", e);
+        std::process::exit(1)
+    }
+    Ok(())
+}
+
+// async fn bot_handler (bot: AutoSend<Bot>, message: Message) -> std::result::Result<(), Box< dyn std::error::Error + Send + Sync>>{
+async fn bot_handler(bot: AutoSend<Bot>, message: Message) -> Result<()> {
+    println!("start");
+    // println!("{:#?}", message);
+    // |message: Message, bot: AutoSend<Bot>| async {
+    // let mut teledata: TeleData = load_teledata(TELEDATA_FILE).unwrap_or_else(|s| {
+    //     println!("---{}---", s);
+    //     std::process::exit(1)
+    // });
+    let mut teledata: TeleData = load_teledata(TELEDATA_FILE)?;
+    let ref mut users = teledata.users_data;
+    let chat_map: HashMap<teloxide::types::ChatId, UserName> =
+        users.iter().map(|(k, v)| (v.chat_id, k.clone())).collect();
+    if let teloxide::types::MessageKind::Common(common_message) = message.kind {
+        if let teloxide::types::MediaKind::Text(media_text) = common_message.media_kind {
+            let words: Vec<_> = media_text.text.split_whitespace().collect();
+            let first_word = words.get(0).unwrap_or(&"").to_string();
+
+            match first_word.as_str() {
+                "/register" => {
+                    let user = words.get(1).unwrap_or(&"").to_string();
+                    let pass = words.get(2).unwrap_or(&"").to_string();
+                    if chat_map.contains_key(&message.chat.id) {
+                        bot.send_message(
+                            message.chat.id,
+                            "An user is already registered in this chat.",
+                        )
+                        .await?;
+                    } else if user == "" {
+                        bot.send_message(message.chat.id, "Nobody to register.")
+                            .await?;
+                    } else if !is_user_pass_ok(&user, &pass)? {
+                        bot.send_message(message.chat.id, "Wrong password or username.")
+                            .await?;
+                        // chequear si se puede acceder desde otro telefono si pongo un sleep para evitar ataques
+                    } else {
+                        let new_user = UserData {
+                            chat_id: message.chat.id,
+                            active: true,
+                        };
+                        users.insert(user.clone(), new_user);
+                        bot.send_message(message.chat.id, format!("Welcome {}!", user))
+                            .await?;
+                    }
+                }
+                "/unregister" => {
+                    if chat_map.contains_key(&message.chat.id) {
+                        let user = words.get(1).unwrap_or(&"").to_string();
+                        if user == "" || &user != chat_map.get(&message.chat.id).unwrap() {
+                            bot.send_message(message.chat.id, "You must specify your username.")
+                                .await?;
+                        } else {
+                            users.remove(&user);
+                            bot.send_message(
+                                message.chat.id,
+                                format!("You are no longer registered"),
+                            )
+                            .await?;
+                        }
+                    } else {
+                        bot.send_message(message.chat.id, "You are not registered. ")
+                            .await?;
+                    }
+                }
+                "/unpause" => {
+                    if chat_map.contains_key(&message.chat.id) {
+                        if !users[&chat_map[&message.chat.id]].active {
+                            bot.send_message(
+                                message.chat.id,
+                                "You will start to recive notifications.",
+                            )
+                            .await?;
+                            users.get_mut(&chat_map[&message.chat.id]).unwrap().active = true;
+                        }
+                    } else {
+                        bot.send_message(message.chat.id, "You are not registered. ")
+                            .await?;
+                    }
+                }
+                "/pause" => {
+                    if chat_map.contains_key(&message.chat.id) {
+                        if users[&chat_map[&message.chat.id]].active {
+                            bot.send_message(
+                                message.chat.id,
+                                "You will stop to recive notifications.",
+                            )
+                            .await?;
+                            users.get_mut(&chat_map[&message.chat.id]).unwrap().active = false;
+                        }
+                    } else {
+                        bot.send_message(message.chat.id, "You are not registered. ")
+                            .await?;
+                    }
+                }
+                "/kill" => {
+                    bot.send_message(message.chat.id, "Killing bot.").await?;
+                    std::process::exit(0);
+                }
+                _ => {}
+            }
+            // if media_text.text == "/stop" {
+            //     bot.send_message(message.chat.id, "Stoping.").await?;
+            //     std::process::exit(0);
+            // }
+        }
+    }
+    // save_teledata(TELEDATA_FILE, &teledata).unwrap_or_else(|s| {
+    //     println!("Error when saving teledata: {}", s);
+    //     std::process::exit(1)
+    // });
+    save_teledata(TELEDATA_FILE, &teledata).context("Could not save ")?;
+    // drop(users_w);
+    // bot.send_dice(message.chat.id).await?;
+    println!("end");
+    // respond(())
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run().await?;
+    Ok(())
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     make_on_fail_teledata_file(TELEDATA_FILE)?;
     // let users: Arc<RwLock<HashMap<String, i64>>> = Arc::new(RwLock::new({
     //     let mut m = HashMap::new();
@@ -231,131 +353,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     println!("D");
     let bot = Bot::new(format!("{}", *BOT_TOKEN)).auto_send();
-    let mut sever_runnig = false;
-    teloxide::repl(
-        bot,
-        move |message: Message, bot: AutoSend<Bot>| async move {
-            println!("start");
-            // println!("{:#?}", message);
-            // |message: Message, bot: AutoSend<Bot>| async {
-            let mut teledata: TeleData = load_teledata(TELEDATA_FILE).unwrap_or_else(|s| {
-                println!("---{}---", s);
-                std::process::exit(1)
-            });
-            let ref mut users = teledata.users_data;
-            let chat_map: HashMap<teloxide::types::ChatId, UserName> =
-                users.iter().map(|(k, v)| (v.chat_id, k.clone())).collect();
-            if let teloxide::types::MessageKind::Common(common_message) = message.kind {
-                if let teloxide::types::MediaKind::Text(media_text) = common_message.media_kind {
-                    let words: Vec<_> = media_text.text.split_whitespace().collect();
-                    let first_word = words.get(0).unwrap_or(&"").to_string();
 
-                    match first_word.as_str() {
-                        "/register" => {
-                            let user = words.get(1).unwrap_or(&"").to_string();
-                            let pass = words.get(2).unwrap_or(&"").to_string();
-                            if user == "" {
-                                bot.send_message(message.chat.id, "Nobody to register.")
-                                    .await?;
-                            } else {
-                                let new_user = UserData {
-                                    chat_id: message.chat.id,
-                                    paused: false,
-                                };
-                                if check_user_pass(&user, &pass).unwrap_or_else(|s| {
-                                    println!("Error checking password: {}", s);
-                                    std::process::exit(1)
-                                }) {
-                                    users.insert(user.clone(), new_user);
-                                    bot.send_message(message.chat.id, format!("Welcome {}!", user))
-                                        .await?;
-                                } else {
-                                    bot.send_message(
-                                        message.chat.id,
-                                        "Wrong password or username.",
-                                    )
-                                    .await?;
-                                    // chequear si se puede acceder desde otro telefono si pongo un sleep para evitar ataques
-                                }
-                            }
-                        }
-                        "/unregister" => {
-                            if chat_map.contains_key(&message.chat.id) {
-                                let user = words.get(1).unwrap_or(&"").to_string();
-                                if user == "" || &user != chat_map.get(&message.chat.id).unwrap() {
-                                    bot.send_message(
-                                        message.chat.id,
-                                        "You must specify your username.",
-                                    )
-                                    .await?;
-                                } else {
-                                    users.remove(&user);
-                                    bot.send_message(
-                                        message.chat.id,
-                                        format!("You are no longer registered"),
-                                    )
-                                    .await?;
-                                }
-                            } else {
-                                bot.send_message(message.chat.id, "You are not registered. ")
-                                    .await?;
-                            }
-                        }
-                        "/unpause" => {
-                            if chat_map.contains_key(&message.chat.id) {
-                                if users[&chat_map[&message.chat.id]].paused {
-                                    bot.send_message(
-                                        message.chat.id,
-                                        "You will start to recive notifications.",
-                                    )
-                                    .await?;
-                                    users.get_mut(&chat_map[&message.chat.id]).unwrap().paused =
-                                        false;
-                                }
-                            } else {
-                                bot.send_message(message.chat.id, "You are not registered. ")
-                                    .await?;
-                            }
-                        }
-                        "/pause" => {
-                            if chat_map.contains_key(&message.chat.id) {
-                                if !users[&chat_map[&message.chat.id]].paused {
-                                    bot.send_message(
-                                        message.chat.id,
-                                        "You will stop to recive notifications.",
-                                    )
-                                    .await?;
-                                    users.get_mut(&chat_map[&message.chat.id]).unwrap().paused =
-                                        true;
-                                }
-                            } else {
-                                bot.send_message(message.chat.id, "You are not registered. ")
-                                    .await?;
-                            }
-                        }
-                        "/kill" => {
-                            bot.send_message(message.chat.id, "Killing bot.").await?;
-                            std::process::exit(0);
-                        }
-                        _ => {}
-                    }
-                    // if media_text.text == "/stop" {
-                    //     bot.send_message(message.chat.id, "Stoping.").await?;
-                    //     std::process::exit(0);
-                    // }
-                }
-            }
-            save_teledata(TELEDATA_FILE, &teledata).unwrap_or_else(|s| {
-                println!("Error when saving teledata: {}", s);
-                std::process::exit(1)
-            });
-            // drop(users_w);
-            // bot.send_dice(message.chat.id).await?;
-            println!("end");
-            respond(())
-        },
-    )
-    .await;
+    teloxide::repl(bot, bot_handler_error_detector).await;
     println!("TELEGRAM STARTED");
     // save_teledata(&TELEDATA_FILE)?;
     // tokio::signal::ctrl_c()
