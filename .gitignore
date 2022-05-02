@@ -1,4 +1,6 @@
 /target
-myconfig.json
-totify_bot_data.toml
+*myconfig.json
+*totify_bot_data.toml
+/bin/sample.rs
+
 
