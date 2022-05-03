@@ -67,6 +67,9 @@ async fn command_handler(bot: AutoSend<Bot>, message: Message, command: Command)
             } else if user == "" {
                 bot.send_message(message.chat.id, "Nobody to register.")
                     .await?;
+            } else if users.contains_key(&user) && users[&user].chat_id != message.chat.id {
+                bot.send_message(message.chat.id, format!("User {} is registered in other device.", user))
+                .await?;
             } else if !is_user_pass_ok(&user, &pass)? {
                 bot.send_message(message.chat.id, "Wrong password or username.")
                     .await?;
